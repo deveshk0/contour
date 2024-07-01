@@ -16,6 +16,7 @@ package dag
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 	gatewayapi_v1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayapi_v1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	gatewayapi_v1alpha3 "sigs.k8s.io/gateway-api/apis/v1alpha3"
 	gatewayapi_v1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	contour_v1 "github.com/projectcontour/contour/apis/projectcontour/v1"
@@ -5510,7 +5512,8 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 						"test.projectcontour.io",
 					},
 					Rules: []gatewayapi_v1.HTTPRouteRule{{
-						Matches:     gatewayapi.HTTPRouteMatch(gatewayapi_v1.PathMatchPathPrefix, "/"),
+						// changed to different matches in case there is conflict with above HTTPRoute
+						Matches:     gatewayapi.HTTPRouteMatch(gatewayapi_v1.PathMatchExact, "/"),
 						BackendRefs: gatewayapi.HTTPBackendRef("kuard", 8080, 1),
 					}},
 				},
@@ -5543,6 +5546,193 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 			},
 		},
 		wantGatewayStatusUpdate: validGatewayStatusUpdate("http", gatewayapi_v1.HTTPProtocolType, 2),
+	})
+
+	run(t, "3 httproutes, but duplicate match condition between these 3. The 2 rank lower gets Conflict condition ", testcase{
+		objs: []any{
+			kuardService,
+			// first HTTPRoute with oldest creationTimestamp
+			&gatewayapi_v1.HTTPRoute{
+				TypeMeta: meta_v1.TypeMeta{
+					Kind: KindHTTPRoute,
+				},
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name:              "basic-1",
+					Namespace:         "default",
+					CreationTimestamp: meta_v1.Date(2020, time.Month(2), 21, 1, 10, 30, 0, time.UTC),
+				},
+				Spec: gatewayapi_v1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
+					},
+					Hostnames: []gatewayapi_v1.Hostname{
+						"test.projectcontour.io",
+					},
+					Rules: []gatewayapi_v1.HTTPRouteRule{{
+						Matches: []gatewayapi_v1.HTTPRouteMatch{
+							{
+								Path: &gatewayapi_v1.HTTPPathMatch{
+									Type:  ptr.To(gatewayapi_v1.PathMatchPathPrefix),
+									Value: ptr.To("/"),
+								},
+								Headers: []gatewayapi_v1.HTTPHeaderMatch{
+									{
+										Type:  ptr.To(gatewayapi_v1.HeaderMatchExact),
+										Name:  gatewayapi_v1.HTTPHeaderName("foo"),
+										Value: "bar",
+									},
+								},
+								QueryParams: []gatewayapi_v1.HTTPQueryParamMatch{
+									{
+										Type:  ptr.To(gatewayapi_v1.QueryParamMatchRegularExpression),
+										Name:  "param-1",
+										Value: "valid-[a-z]?-[A-Za-z]+-[0=9]+-\\d+",
+									},
+								},
+							},
+							{
+								Path: &gatewayapi_v1.HTTPPathMatch{
+									Type:  ptr.To(gatewayapi_v1.PathMatchPathPrefix),
+									Value: ptr.To("/"),
+								},
+								Headers: []gatewayapi_v1.HTTPHeaderMatch{
+									{
+										Type:  ptr.To(gatewayapi_v1.HeaderMatchExact),
+										Name:  gatewayapi_v1.HTTPHeaderName("a"),
+										Value: "b",
+									},
+								},
+							},
+						},
+
+						BackendRefs: gatewayapi.HTTPBackendRef("kuard", 8080, 1),
+					}},
+				},
+			},
+			// second HTTPRoute with 2nd oldest creationTimestamp, conflict with 1st HTTPRoute
+			&gatewayapi_v1.HTTPRoute{
+				TypeMeta: meta_v1.TypeMeta{
+					Kind: KindHTTPRoute,
+				},
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name:              "basic-2",
+					Namespace:         "default",
+					CreationTimestamp: meta_v1.Date(2021, time.Month(2), 21, 1, 10, 30, 0, time.UTC),
+				},
+				Spec: gatewayapi_v1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
+					},
+					Hostnames: []gatewayapi_v1.Hostname{
+						"test.projectcontour.io",
+					},
+					Rules: []gatewayapi_v1.HTTPRouteRule{{
+						Matches: []gatewayapi_v1.HTTPRouteMatch{
+							{
+								Path: &gatewayapi_v1.HTTPPathMatch{
+									Type:  ptr.To(gatewayapi_v1.PathMatchPathPrefix),
+									Value: ptr.To("/"),
+								},
+								Headers: []gatewayapi_v1.HTTPHeaderMatch{
+									{
+										Type:  ptr.To(gatewayapi_v1.HeaderMatchExact),
+										Name:  gatewayapi_v1.HTTPHeaderName("a"),
+										Value: "b",
+									},
+								},
+							},
+						},
+
+						BackendRefs: gatewayapi.HTTPBackendRef("kuard", 8080, 1),
+					}},
+				},
+			},
+			// 3rd HTTPRoute with newest creationTimestamp, conflict with 1st HTTPRoute
+			&gatewayapi_v1.HTTPRoute{
+				TypeMeta: meta_v1.TypeMeta{
+					Kind: KindHTTPRoute,
+				},
+				ObjectMeta: meta_v1.ObjectMeta{
+					Name:              "basic-3",
+					Namespace:         "default",
+					CreationTimestamp: meta_v1.Date(2022, time.Month(2), 21, 1, 10, 30, 0, time.UTC),
+				},
+				Spec: gatewayapi_v1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
+					},
+					Hostnames: []gatewayapi_v1.Hostname{
+						"test.projectcontour.io",
+					},
+					Rules: []gatewayapi_v1.HTTPRouteRule{{
+						Matches: []gatewayapi_v1.HTTPRouteMatch{
+							{
+								Path: &gatewayapi_v1.HTTPPathMatch{
+									Type:  ptr.To(gatewayapi_v1.PathMatchPathPrefix),
+									Value: ptr.To("/"),
+								},
+								Headers: []gatewayapi_v1.HTTPHeaderMatch{
+									{
+										Type:  ptr.To(gatewayapi_v1.HeaderMatchExact),
+										Name:  gatewayapi_v1.HTTPHeaderName("foo"),
+										Value: "bar",
+									},
+								},
+								QueryParams: []gatewayapi_v1.HTTPQueryParamMatch{
+									{
+										Type:  ptr.To(gatewayapi_v1.QueryParamMatchRegularExpression),
+										Name:  "param-1",
+										Value: "valid-[a-z]?-[A-Za-z]+-[0=9]+-\\d+",
+									},
+								},
+							},
+						},
+
+						BackendRefs: gatewayapi.HTTPBackendRef("kuard", 8080, 1),
+					}},
+				},
+			},
+		},
+		wantRouteConditions: []*status.RouteStatusUpdate{
+			{
+				FullName: types.NamespacedName{Namespace: "default", Name: "basic-1"},
+				RouteParentStatuses: []*gatewayapi_v1.RouteParentStatus{
+					{
+						ParentRef: gatewayapi.GatewayParentRef("projectcontour", "contour"),
+						Conditions: []meta_v1.Condition{
+							routeResolvedRefsCondition(),
+							routeAcceptedHTTPRouteCondition(),
+						},
+					},
+				},
+			},
+			{
+				FullName: types.NamespacedName{Namespace: "default", Name: "basic-2"},
+				RouteParentStatuses: []*gatewayapi_v1.RouteParentStatus{
+					{
+						ParentRef: gatewayapi.GatewayParentRef("projectcontour", "contour"),
+						Conditions: []meta_v1.Condition{
+							routeAcceptedFalse(status.ReasonRouteRuleMatchConflict, "HTTPRoute's Match has conflict with other HTTPRoute's Match"),
+							routeResolvedRefsCondition(),
+						},
+					},
+				},
+			},
+			{
+				FullName: types.NamespacedName{Namespace: "default", Name: "basic-3"},
+				RouteParentStatuses: []*gatewayapi_v1.RouteParentStatus{
+					{
+						ParentRef: gatewayapi.GatewayParentRef("projectcontour", "contour"),
+						Conditions: []meta_v1.Condition{
+							routeAcceptedFalse(status.ReasonRouteRuleMatchConflict, "HTTPRoute's Match has conflict with other HTTPRoute's Match"),
+							routeResolvedRefsCondition(),
+						},
+					},
+				},
+			},
+		},
+		// is it ok to show the listeners are attached, just it's not accepted because of the conflict
+		wantGatewayStatusUpdate: validGatewayStatusUpdate("http", gatewayapi_v1.HTTPProtocolType, 3),
 	})
 
 	run(t, "prefix path match not starting with '/' for httproute", testcase{
@@ -9441,7 +9631,7 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 		},
 	})
 
-	run(t, "route rule with timeouts.request and timeouts.backendRequest specified", testcase{
+	run(t, "route rule with timeouts.backendRequest greater than timeouts.request", testcase{
 		objs: []any{
 			kuardService,
 			&gatewayapi_v1.HTTPRoute{
@@ -9462,7 +9652,7 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 							BackendRefs: gatewayapi.HTTPBackendRef("kuard", 8080, 1),
 							Timeouts: &gatewayapi_v1.HTTPRouteTimeouts{
 								Request:        ptr.To(gatewayapi_v1.Duration("30s")),
-								BackendRequest: ptr.To(gatewayapi_v1.Duration("30s")),
+								BackendRequest: ptr.To(gatewayapi_v1.Duration("60s")),
 							},
 						},
 					},
@@ -9477,7 +9667,7 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 					ParentRef: gatewayapi.GatewayParentRef("projectcontour", "contour"),
 					Conditions: []meta_v1.Condition{
 						routeResolvedRefsCondition(),
-						routeAcceptedFalse(gatewayapi_v1.RouteReasonUnsupportedValue, "HTTPRoute.Spec.Rules.Timeouts.BackendRequest is not supported, use HTTPRoute.Spec.Rules.Timeouts.Request instead"),
+						routeAcceptedFalse(gatewayapi_v1.RouteReasonUnsupportedValue, "HTTPRoute.Spec.Rules.Timeouts.BackendRequest must be less than/equal to HTTPRoute.Spec.Rules.Timeouts.Request when both are specified"),
 					},
 				},
 			},
@@ -9486,7 +9676,7 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 		wantGatewayStatusUpdate: validGatewayStatusUpdate("http", gatewayapi_v1.HTTPProtocolType, 1),
 	})
 
-	run(t, "route rule with only timeouts.backendRequest specified", testcase{
+	run(t, "route rule with invalid timeouts.backendRequest specified", testcase{
 		objs: []any{
 			kuardService,
 			&gatewayapi_v1.HTTPRoute{
@@ -9506,7 +9696,7 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 							Matches:     gatewayapi.HTTPRouteMatch(gatewayapi_v1.PathMatchPathPrefix, "/"),
 							BackendRefs: gatewayapi.HTTPBackendRef("kuard", 8080, 1),
 							Timeouts: &gatewayapi_v1.HTTPRouteTimeouts{
-								BackendRequest: ptr.To(gatewayapi_v1.Duration("30s")),
+								BackendRequest: ptr.To(gatewayapi_v1.Duration("invalid")),
 							},
 						},
 					},
@@ -9520,7 +9710,7 @@ func TestGatewayAPIHTTPRouteDAGStatus(t *testing.T) {
 					ParentRef: gatewayapi.GatewayParentRef("projectcontour", "contour"),
 					Conditions: []meta_v1.Condition{
 						routeResolvedRefsCondition(),
-						routeAcceptedFalse(gatewayapi_v1.RouteReasonUnsupportedValue, "HTTPRoute.Spec.Rules.Timeouts.BackendRequest is not supported, use HTTPRoute.Spec.Rules.Timeouts.Request instead"),
+						routeAcceptedFalse(gatewayapi_v1.RouteReasonUnsupportedValue, "invalid HTTPRoute.Spec.Rules.Timeouts.BackendRequest: unable to parse timeout string \"invalid\": time: invalid duration \"invalid\""),
 					},
 				},
 			},
@@ -9702,16 +9892,16 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef("projectcontour", "contour"),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"test.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"test.projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
-						BackendRefs: []gatewayapi_v1alpha2.BackendRef{
+						BackendRefs: []gatewayapi_v1.BackendRef{
 							{
-								BackendObjectReference: gatewayapi_v1alpha2.BackendObjectReference{
+								BackendObjectReference: gatewayapi_v1.BackendObjectReference{
 									Kind: ptr.To(gatewayapi_v1.Kind("Service")),
 									Port: ptr.To(gatewayapi_v1.PortNumber(8080)),
 								},
@@ -9750,12 +9940,12 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef("projectcontour", "contour"),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"test.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"test.projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{
 						{BackendRefs: gatewayapi.TLSRouteBackendRef("invalid-one", 8080, nil)},
 						{BackendRefs: gatewayapi.TLSRouteBackendRef("invalid-two", 8080, nil)},
@@ -9795,16 +9985,16 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef("projectcontour", "contour"),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"test.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"test.projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
-						BackendRefs: []gatewayapi_v1alpha2.BackendRef{
+						BackendRefs: []gatewayapi_v1.BackendRef{
 							{
-								BackendObjectReference: gatewayapi_v1alpha2.BackendObjectReference{
+								BackendObjectReference: gatewayapi_v1.BackendObjectReference{
 									Kind: ptr.To(gatewayapi_v1.Kind("Service")),
 									Name: "kuard",
 								},
@@ -9844,15 +10034,15 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef("projectcontour", "contour"),
 						},
 					},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{
 						{}, // rule with no backend refs
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"test.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"test.projectcontour.io"},
 				},
 			},
 		},
@@ -9886,12 +10076,12 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef("projectcontour", "contour"),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"*.*.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"*.*.projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
 						BackendRefs: gatewayapi.TLSRouteBackendRef("kuard", 8080, nil),
 					}},
@@ -9930,12 +10120,12 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef("projectcontour", "contour"),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"#projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"#projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
 						BackendRefs: gatewayapi.TLSRouteBackendRef("kuard", 8080, nil),
 					}},
@@ -9974,12 +10164,12 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef("projectcontour", "contour"),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"1.2.3.4"},
+					Hostnames: []gatewayapi_v1.Hostname{"1.2.3.4"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
 						BackendRefs: gatewayapi.TLSRouteBackendRef("kuard", 8080, nil),
 					}},
@@ -10016,12 +10206,12 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayParentRef(gw.Namespace, gw.Name),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"test.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"test.projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
 						BackendRefs: gatewayapi.TLSRouteBackendRef(kuardService.Name, 8080, ptr.To(int32(0))),
 					}},
@@ -10064,13 +10254,13 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							// Wrong port.
 							gatewayapi.GatewayListenerParentRef(gw.Namespace, gw.Name, "tls-passthrough", 444),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"test.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"test.projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
 						BackendRefs: gatewayapi.TLSRouteBackendRef("invalid-one", 8080, nil),
 					}},
@@ -10132,12 +10322,12 @@ func TestGatewayAPITLSRouteDAGStatus(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: gatewayapi_v1alpha2.TLSRouteSpec{
-					CommonRouteSpec: gatewayapi_v1alpha2.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							gatewayapi.GatewayListenerParentRef(gw.Namespace, gw.Name, "tls", 443),
 						},
 					},
-					Hostnames: []gatewayapi_v1alpha2.Hostname{"test.projectcontour.io"},
+					Hostnames: []gatewayapi_v1.Hostname{"test.projectcontour.io"},
 					Rules: []gatewayapi_v1alpha2.TLSRouteRule{{
 						BackendRefs: gatewayapi.TLSRouteBackendRef("kuard", 8080, nil),
 					}},
@@ -10349,21 +10539,21 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "simple grpcroute", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
 					}},
@@ -10388,22 +10578,22 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: regular expression method match type is not yet supported", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
 						// RegularExpression type not yet supported
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchRegularExpression, "com.example.service", "Login"),
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchRegularExpression, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
 					}},
@@ -10433,21 +10623,21 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: method match must have Service configured", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
 					}},
@@ -10477,21 +10667,21 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: method match must have Method configured", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", ""),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", ""),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
 					}},
@@ -10521,29 +10711,29 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: invalid header match type is not supported", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: &gatewayapi_v1alpha2.GRPCMethodMatch{
-								Type:    ptr.To(gatewayapi_v1alpha2.GRPCMethodMatchExact),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: &gatewayapi_v1.GRPCMethodMatch{
+								Type:    ptr.To(gatewayapi_v1.GRPCMethodMatchExact),
 								Service: ptr.To("come.example.service"),
 								Method:  ptr.To("Login"),
 							},
-							Headers: []gatewayapi_v1alpha2.GRPCHeaderMatch{
+							Headers: []gatewayapi_v1.GRPCHeaderMatch{
 								{
 									Type:  ptr.To(gatewayapi_v1.HeaderMatchType("UNKNOWN")), // <---- unknown type to break the test
-									Name:  gatewayapi_v1alpha2.GRPCHeaderName("foo"),
+									Name:  gatewayapi_v1.GRPCHeaderName("foo"),
 									Value: "bar",
 								},
 							},
@@ -10576,29 +10766,29 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: regular expression header match has invalid value", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: &gatewayapi_v1alpha2.GRPCMethodMatch{
-								Type:    ptr.To(gatewayapi_v1alpha2.GRPCMethodMatchExact),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: &gatewayapi_v1.GRPCMethodMatch{
+								Type:    ptr.To(gatewayapi_v1.GRPCMethodMatchExact),
 								Service: ptr.To("come.example.service"),
 								Method:  ptr.To("Login"),
 							},
-							Headers: []gatewayapi_v1alpha2.GRPCHeaderMatch{
+							Headers: []gatewayapi_v1.GRPCHeaderMatch{
 								{
 									Type:  ptr.To(gatewayapi_v1.HeaderMatchRegularExpression),
-									Name:  gatewayapi_v1alpha2.GRPCHeaderName("foo"),
+									Name:  gatewayapi_v1.GRPCHeaderName("foo"),
 									Value: "invalid(-)regex)",
 								},
 							},
@@ -10631,25 +10821,25 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: invalid RequestHeaderModifier due to duplicated headers", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
-						Filters: []gatewayapi_v1alpha2.GRPCRouteFilter{{
-							Type: gatewayapi_v1alpha2.GRPCRouteFilterRequestHeaderModifier,
+						Filters: []gatewayapi_v1.GRPCRouteFilter{{
+							Type: gatewayapi_v1.GRPCRouteFilterRequestHeaderModifier,
 							RequestHeaderModifier: &gatewayapi_v1.HTTPHeaderFilter{
 								Set: []gatewayapi_v1.HTTPHeader{
 									{Name: "custom", Value: "duplicated"},
@@ -10680,25 +10870,25 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: invalid ResponseHeaderModifier due to invalid headers", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
-						Filters: []gatewayapi_v1alpha2.GRPCRouteFilter{{
-							Type: gatewayapi_v1alpha2.GRPCRouteFilterResponseHeaderModifier,
+						Filters: []gatewayapi_v1.GRPCRouteFilter{{
+							Type: gatewayapi_v1.GRPCRouteFilterResponseHeaderModifier,
 							ResponseHeaderModifier: &gatewayapi_v1.HTTPHeaderFilter{
 								Add: []gatewayapi_v1.HTTPHeader{
 									{Name: "!invalid-header", Value: "foo"},
@@ -10732,31 +10922,31 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 			kuardService,
 			kuardService2,
 			kuardService3,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
-						Filters: []gatewayapi_v1alpha2.GRPCRouteFilter{
+						Filters: []gatewayapi_v1.GRPCRouteFilter{
 							{
-								Type: gatewayapi_v1alpha2.GRPCRouteFilterRequestMirror,
+								Type: gatewayapi_v1.GRPCRouteFilterRequestMirror,
 								RequestMirror: &gatewayapi_v1.HTTPRequestMirrorFilter{
 									BackendRef: gatewayapi.ServiceBackendObjectRef("kuard2", 8080),
 								},
 							}, {
-								Type: gatewayapi_v1alpha2.GRPCRouteFilterRequestMirror,
+								Type: gatewayapi_v1.GRPCRouteFilterRequestMirror,
 								RequestMirror: &gatewayapi_v1.HTTPRequestMirrorFilter{
 									BackendRef: gatewayapi.ServiceBackendObjectRef("kuard3", 8080),
 								},
@@ -10785,25 +10975,25 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 		objs: []any{
 			kuardService,
 			kuardService2,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
-						Filters: []gatewayapi_v1alpha2.GRPCRouteFilter{{
-							Type: gatewayapi_v1alpha2.GRPCRouteFilterRequestMirror,
+						Filters: []gatewayapi_v1.GRPCRouteFilter{{
+							Type: gatewayapi_v1.GRPCRouteFilterRequestMirror,
 							RequestMirror: &gatewayapi_v1.HTTPRequestMirrorFilter{
 								BackendRef: gatewayapi_v1.BackendObjectReference{
 									Group: ptr.To(gatewayapi_v1.Group("")),
@@ -10835,24 +11025,24 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: custom filter type is not supported", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("kuard", 8080, 1),
-						Filters: []gatewayapi_v1alpha2.GRPCRouteFilter{{
+						Filters: []gatewayapi_v1.GRPCRouteFilter{{
 							Type: "custom-filter",
 						}},
 					}},
@@ -10883,24 +11073,24 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: at lease one backend need to be specified", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{
+					Rules: []gatewayapi_v1.GRPCRouteRule{
 						{
-							Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-								Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+							Matches: []gatewayapi_v1.GRPCRouteMatch{{
+								Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 							}},
-							BackendRefs: []gatewayapi_v1alpha2.GRPCBackendRef{},
+							BackendRefs: []gatewayapi_v1.GRPCBackendRef{},
 						},
 					},
 				},
@@ -10924,14 +11114,14 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: still validate backendrefs when not accepted", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
-						ParentRefs: []gatewayapi_v1alpha2.ParentReference{
+						ParentRefs: []gatewayapi_v1.ParentReference{
 							// Wrong port.
 							gatewayapi.GatewayListenerParentRef("projectcontour", "contour", "http", 900),
 						},
@@ -10939,9 +11129,9 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
 						BackendRefs: gatewayapi.GRPCRouteBackendRef("invalid", 8080, 1),
 					}},
@@ -10976,30 +11166,30 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: invalid RequestHeaderModifier on backend due to duplicated headers", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{
+					Rules: []gatewayapi_v1.GRPCRouteRule{
 						{
-							Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-								Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+							Matches: []gatewayapi_v1.GRPCRouteMatch{{
+								Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 							}},
-							BackendRefs: []gatewayapi_v1alpha2.GRPCBackendRef{
+							BackendRefs: []gatewayapi_v1.GRPCBackendRef{
 								{
 									BackendRef: gatewayapi_v1.BackendRef{
 										BackendObjectReference: gatewayapi.ServiceBackendObjectRef("kuard", 8080),
 									},
-									Filters: []gatewayapi_v1alpha2.GRPCRouteFilter{{
-										Type: gatewayapi_v1alpha2.GRPCRouteFilterRequestHeaderModifier,
+									Filters: []gatewayapi_v1.GRPCRouteFilter{{
+										Type: gatewayapi_v1.GRPCRouteFilterRequestHeaderModifier,
 										RequestHeaderModifier: &gatewayapi_v1.HTTPHeaderFilter{
 											Set: []gatewayapi_v1.HTTPHeader{
 												{Name: "custom", Value: "duplicated"},
@@ -11033,29 +11223,29 @@ func TestGatewayAPIGRPCRouteDAGStatus(t *testing.T) {
 	run(t, "grpcroute: invalid ResponseHeaderModifier on backend due to invalid headers", testcase{
 		objs: []any{
 			kuardService,
-			&gatewayapi_v1alpha2.GRPCRoute{
+			&gatewayapi_v1.GRPCRoute{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "default",
 				},
-				Spec: gatewayapi_v1alpha2.GRPCRouteSpec{
+				Spec: gatewayapi_v1.GRPCRouteSpec{
 					CommonRouteSpec: gatewayapi_v1.CommonRouteSpec{
 						ParentRefs: []gatewayapi_v1.ParentReference{gatewayapi.GatewayParentRef("projectcontour", "contour")},
 					},
 					Hostnames: []gatewayapi_v1.Hostname{
 						"test.projectcontour.io",
 					},
-					Rules: []gatewayapi_v1alpha2.GRPCRouteRule{{
-						Matches: []gatewayapi_v1alpha2.GRPCRouteMatch{{
-							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1alpha2.GRPCMethodMatchExact, "com.example.service", "Login"),
+					Rules: []gatewayapi_v1.GRPCRouteRule{{
+						Matches: []gatewayapi_v1.GRPCRouteMatch{{
+							Method: gatewayapi.GRPCMethodMatch(gatewayapi_v1.GRPCMethodMatchExact, "com.example.service", "Login"),
 						}},
-						BackendRefs: []gatewayapi_v1alpha2.GRPCBackendRef{
+						BackendRefs: []gatewayapi_v1.GRPCBackendRef{
 							{
 								BackendRef: gatewayapi_v1.BackendRef{
 									BackendObjectReference: gatewayapi.ServiceBackendObjectRef("kuard", 8080),
 								},
-								Filters: []gatewayapi_v1alpha2.GRPCRouteFilter{{
-									Type: gatewayapi_v1alpha2.GRPCRouteFilterResponseHeaderModifier,
+								Filters: []gatewayapi_v1.GRPCRouteFilter{{
+									Type: gatewayapi_v1.GRPCRouteFilterResponseHeaderModifier,
 									ResponseHeaderModifier: &gatewayapi_v1.HTTPHeaderFilter{
 										Set: []gatewayapi_v1.HTTPHeader{
 											{Name: "!invalid-header", Value: "foo"},
@@ -11520,20 +11710,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "ConfigMap",
 							Name: gatewayapi_v1.ObjectName(configMapCert1.Name),
 						}},
@@ -11565,20 +11757,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "nonexistent",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "nonexistent",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "ConfigMap",
 							Name: gatewayapi_v1.ObjectName(configMapCert1.Name),
 						}},
@@ -11595,20 +11789,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "Invalid",
 							Name: gatewayapi_v1.ObjectName(configMapCert1.Name),
 						}},
@@ -11627,7 +11823,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "BackendTLSPolicy.Spec.TLS.CACertRef.Kind \"Invalid\" is unsupported. Only ConfigMap or Secret Kind is supported.",
+							Message: "BackendTLSPolicy.Spec.Validation.CACertificateRef.Kind \"Invalid\" is unsupported. Only ConfigMap or Secret Kind is supported.",
 						},
 					},
 				},
@@ -11639,20 +11835,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 		objs: []any{
 			tlsService,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "ConfigMap",
 							Name: gatewayapi_v1.ObjectName("missing"),
 						}},
@@ -11671,7 +11869,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "Could not find CACertRef ConfigMap: projectcontour/missing",
+							Message: "Could not find CACertificateRef ConfigMap: projectcontour/missing",
 						},
 					},
 				},
@@ -11683,20 +11881,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 		objs: []any{
 			tlsService,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "Secret",
 							Name: gatewayapi_v1.ObjectName("missing"),
 						}},
@@ -11715,7 +11915,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "Could not find CACertRef Secret: projectcontour/missing",
+							Message: "Could not find CACertificateRef Secret: projectcontour/missing",
 						},
 					},
 				},
@@ -11728,20 +11928,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{
 							{
 								Kind: "Invalid",
 								Name: gatewayapi_v1.ObjectName(configMapCert1.Name),
@@ -11770,7 +11972,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "BackendTLSPolicy.Spec.TLS.CACertRef.Kind \"Invalid\" is unsupported. Only ConfigMap or Secret Kind is supported., Could not find CACertRef ConfigMap: projectcontour/missing",
+							Message: "BackendTLSPolicy.Spec.Validation.CACertificateRef.Kind \"Invalid\" is unsupported. Only ConfigMap or Secret Kind is supported., Could not find CACertificateRef ConfigMap: projectcontour/missing",
 						},
 					},
 				},
@@ -11783,21 +11985,23 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						WellKnownCACerts: ptr.To(gatewayapi_v1alpha2.WellKnownCACertSystem),
-						Hostname:         "example.com",
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						WellKnownCACertificates: ptr.To(gatewayapi_v1alpha3.WellKnownCACertificatesSystem),
+						Hostname:                "example.com",
 					},
 				},
 			},
@@ -11812,7 +12016,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "BackendTLSPolicy.Spec.TLS.WellKnownCACerts is unsupported.",
+							Message: "BackendTLSPolicy.Spec.Validation.WellKnownCACertificates is unsupported.",
 						},
 					},
 				},
@@ -11825,20 +12029,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "ConfigMap",
 							Name: gatewayapi_v1.ObjectName(configMapCert1.Name),
 						}},
@@ -11857,7 +12063,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "BackendTLSPolicy.Spec.TLS.Hostname \"-bad-hostname.example.com\" is invalid. Hostname must be a valid RFC 1123 fully qualified domain name. Wildcard domains and numeric IP addresses are not allowed",
+							Message: "BackendTLSPolicy.Spec.Validation.Hostname \"-bad-hostname.example.com\" is invalid. Hostname must be a valid RFC 1123 fully qualified domain name. Wildcard domains and numeric IP addresses are not allowed",
 						},
 					},
 				},
@@ -11870,20 +12076,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "ConfigMap",
 							Name: gatewayapi_v1.ObjectName(configMapCert1.Name),
 						}},
@@ -11902,7 +12110,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "BackendTLSPolicy.Spec.TLS.Hostname \"*.example.com\" is invalid. Hostname must be a valid RFC 1123 fully qualified domain name. Wildcard domains and numeric IP addresses are not allowed",
+							Message: "BackendTLSPolicy.Spec.Validation.Hostname \"*.example.com\" is invalid. Hostname must be a valid RFC 1123 fully qualified domain name. Wildcard domains and numeric IP addresses are not allowed",
 						},
 					},
 				},
@@ -11915,20 +12123,22 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 			tlsService,
 			configMapCert1,
 			makeHTTPRoute("basic", "projectcontour", "", makeHTTPRouteRule(gatewayapi_v1.PathMatchPathPrefix, "/", "tlssvc", 443, 1)),
-			&gatewayapi_v1alpha2.BackendTLSPolicy{
+			&gatewayapi_v1alpha3.BackendTLSPolicy{
 				ObjectMeta: meta_v1.ObjectMeta{
 					Name:      "basic",
 					Namespace: "projectcontour",
 				},
-				Spec: gatewayapi_v1alpha2.BackendTLSPolicySpec{
-					TargetRef: gatewayapi_v1alpha2.PolicyTargetReferenceWithSectionName{
-						PolicyTargetReference: gatewayapi_v1alpha2.PolicyTargetReference{
-							Kind: "Service",
-							Name: "tlssvc",
+				Spec: gatewayapi_v1alpha3.BackendTLSPolicySpec{
+					TargetRefs: []gatewayapi_v1alpha2.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayapi_v1alpha2.LocalPolicyTargetReference{
+								Kind: "Service",
+								Name: "tlssvc",
+							},
 						},
 					},
-					TLS: gatewayapi_v1alpha2.BackendTLSPolicyConfig{
-						CACertRefs: []gatewayapi_v1alpha2.LocalObjectReference{{
+					Validation: gatewayapi_v1alpha3.BackendTLSPolicyValidation{
+						CACertificateRefs: []gatewayapi_v1.LocalObjectReference{{
 							Kind: "ConfigMap",
 							Name: gatewayapi_v1.ObjectName(configMapCert1.Name),
 						}},
@@ -11947,7 +12157,7 @@ func TestGatewayAPIBackendTLSPolicyDAGStatus(t *testing.T) {
 							Type:    string(gatewayapi_v1alpha2.PolicyConditionAccepted),
 							Status:  meta_v1.ConditionFalse,
 							Reason:  string(gatewayapi_v1alpha2.PolicyReasonInvalid),
-							Message: "BackendTLSPolicy.Spec.TLS.Hostname \"127.0.0.1\" is invalid. Hostname must be a valid RFC 1123 fully qualified domain name. Wildcard domains and numeric IP addresses are not allowed",
+							Message: "BackendTLSPolicy.Spec.Validation.Hostname \"127.0.0.1\" is invalid. Hostname must be a valid RFC 1123 fully qualified domain name. Wildcard domains and numeric IP addresses are not allowed",
 						},
 					},
 				},
